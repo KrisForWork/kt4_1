@@ -1,58 +1,74 @@
 package com.example.kt4_11
 
 import kotlinx.coroutines.*
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import kotlin.system.measureTimeMillis
 import kotlin.random.Random
 
-@Serializable
 data class User(val id: Int, val name: String)
-
-@Serializable
 data class SaleItem(val product: String, val qty: Int, val revenue: Int)
-
-@Serializable
 data class SalesData(val today: String, val items: List<SaleItem>)
-
-@Serializable
 data class Weather(val city: String, val temp: Int, val condition: String)
 
 suspend fun main() = runBlocking {
-    println("Начинаем параллельную загрузку данных...")
+    println("Starting parallel data loading...")
 
     val totalTime = measureTimeMillis {
-        try {
-            val results = coroutineScope {
-                val usersDeferred = async { loadUsersWithDelay() }
-                val salesDeferred = async { loadSalesWithDelay() }
-                val weatherDeferred = async { loadWeatherWithDelay() }
+        val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
+            println("Coroutine error: ${throwable.message}")
+        }
 
+        val deferredResults = supervisorScope {
+            val usersDeferred = async {
                 try {
-                    val users = usersDeferred.await()
-                    val sales = salesDeferred.await()
-                    val weather = weatherDeferred.await()
-
-                    Triple(users, sales, weather)
+                    loadUsersWithDelay()
                 } catch (e: Exception) {
-                    println("Ошибка при выполнении задач: ${e.message}")
-                    null
+                    println("Users task failed: ${e.message}")
+                    emptyList()
                 }
             }
 
-            results?.let { (users, sales, weather) ->
-                println("\n--- РЕЗУЛЬТАТЫ ЗАГРУЗКИ ---")
-                println("Пользователи (${users.size}): ${users.joinToString()}")
-                println("Продажи за день: ${sales.map { (product, qty) -> "$product: $qty шт" }.joinToString()}")
-                println("Погода: ${weather.joinToString()}")
+            val salesDeferred = async {
+                try {
+                    loadSalesWithDelay()
+                } catch (e: Exception) {
+                    println("Sales task failed: ${e.message}")
+                    emptyMap()
+                }
             }
 
-        } catch (e: Exception) {
-            println("Критическая ошибка: ${e.message}")
+            val weatherDeferred = async {
+                try {
+                    loadWeatherWithDelay()
+                } catch (e: Exception) {
+                    println("Weather task failed: ${e.message}")
+                    emptyList()
+                }
+            }
+
+            try {
+                val users = usersDeferred.await()
+                val sales = salesDeferred.await()
+                val weather = weatherDeferred.await()
+
+                Triple(users, sales, weather)
+            } catch (e: Exception) {
+                println("Error waiting for results: ${e.message}")
+                Triple(emptyList(), emptyMap(), emptyList())
+            }
+        }
+
+        with(deferredResults) {
+            val (users, sales, weather) = this
+            println("\n--- RESULTS ---")
+            println("Users (${users.size}): ${users.joinToString()}")
+            println("Sales: ${sales.map { (product, qty) -> "$product: $qty pcs" }.joinToString()}")
+            println("Weather: ${weather.joinToString()}")
         }
     }
 
-    println("\nОбщее время выполнения: ${totalTime}мс")
+    println("\nTotal execution time: ${totalTime}ms")
 }
 
 suspend fun loadUsersWithDelay(): List<String> {
@@ -69,8 +85,15 @@ suspend fun loadUsersWithDelay(): List<String> {
             ]
         """.trimIndent()
 
-        val users = Json.decodeFromString<List<User>>(json)
-        users.map { it.name }
+        try {
+            val gson = Gson()
+            val listType = object : TypeToken<List<User>>() {}.type
+            val users: List<User> = gson.fromJson(json, listType)
+            users.map { it.name }
+        } catch (e: Exception) {
+            println("Error parsing users JSON: ${e.message}")
+            emptyList()
+        }
     }
 }
 
@@ -89,8 +112,14 @@ suspend fun loadSalesWithDelay(): Map<String, Int> {
             }
         """.trimIndent()
 
-        val salesData = Json.decodeFromString<SalesData>(json)
-        salesData.items.associate { it.product to it.qty }
+        try {
+            val gson = Gson()
+            val salesData = gson.fromJson(json, SalesData::class.java)
+            salesData.items.associate { it.product to it.qty }
+        } catch (e: Exception) {
+            println("Error parsing sales JSON: ${e.message}")
+            emptyMap()
+        }
     }
 }
 
@@ -107,8 +136,15 @@ suspend fun loadWeatherWithDelay(): List<String> {
             ]
         """.trimIndent()
 
-        val weatherList = Json.decodeFromString<List<Weather>>(json)
-        weatherList.map { "${it.city}: ${it.temp}°C" }
+        try {
+            val gson = Gson()
+            val listType = object : TypeToken<List<Weather>>() {}.type
+            val weatherList: List<Weather> = gson.fromJson(json, listType)
+            weatherList.map { "${it.city}: ${it.temp} C" }
+        } catch (e: Exception) {
+            println("Error parsing weather JSON: ${e.message}")
+            emptyList()
+        }
     }
 }
 
@@ -117,7 +153,7 @@ suspend fun simulateNetworkDelay(timeMs: Long) {
 }
 
 fun simulateRandomFailure(source: String) {
-    if (Random.nextInt(100) < 20) { // 20% chance of failure
-        throw RuntimeException("Сбой при загрузке $source (случайная ошибка)")
+    if (Random.nextInt(1000) < 20) {
+        throw RuntimeException("Random failure loading $source")
     }
 }
